@@ -9,6 +9,7 @@ import uuid
 import ass
 import argparse
 import sys
+import datetime  # Add datetime module for timestamp handling
 
 # Supported subtitle and font extensions
 SUB_EXTS = ['.ass', '.srt', '.ssa', '.sub']
@@ -30,8 +31,17 @@ LANG_RE = re.compile(r'\.(?P<lang>[a-z]{2,3})\.[^.]+$')
 EPISODE_PATTERNS = [
     re.compile(r'S(\d+)E(\d+)', re.IGNORECASE),      # S01E01 format
     re.compile(r'(\d+)x(\d+)', re.IGNORECASE),       # 01x01 format
-    re.compile(r'\[(\d{1,3})\]'),                    # [01] format common in anime
-    re.compile(r'(?<![0-9])E?(\d{1,3})(?![0-9])'),   # E01 or 01 format (standalone)
+    re.compile(r' - (\d{1,2})(?:\s|$|\[)', re.IGNORECASE),   # Name - 01 format common for anime
+    re.compile(r'\[(\d{1,3})(?!\d)(?!p)(?!x\d)(?!bit)(?!-bit)\]'),   # [01] format common in anime
+    re.compile(r'(?<![0-9])E?(\d{1,3})(?![0-9xp])', re.IGNORECASE),   # E01 or 01 format (standalone)
+]
+
+# Patterns to explicitly ignore for episode detection (technical specs, resolutions, etc.)
+IGNORE_PATTERNS = [
+    re.compile(r'\[[^\]]*\d+x\d+[^\]]*\]'),          # Any brackets containing resolution like [960x720]
+    re.compile(r'\[[^\]]*\d+p[^\]]*\]'),             # Any brackets containing resolution like [1080p]
+    re.compile(r'\[[^\]]*(?:DVDRip|BDRip|WebRip)[^\]]*\]', re.IGNORECASE),  # Source indicators
+    re.compile(r'\[[^\]]*(?:x26[45]|hevc|avc|flac|ac3|mp3)[^\]]*\]', re.IGNORECASE),  # Codec indicators
 ]
 
 # Show name pattern
@@ -42,20 +52,35 @@ def extract_episode_info(filename):
     Extract season and episode numbers from filename.
     Returns tuple (season, episode) or (None, episode) or (None, None)
     """
+    # First check if the pattern might be a technical spec that we should ignore
+    for ignore_pattern in IGNORE_PATTERNS:
+        # For any potential match we find in brackets that could be a resolution or spec, mark it to skip
+        matches = ignore_pattern.finditer(filename)
+        skip_ranges = []
+        for match in matches:
+            skip_ranges.append((match.start(), match.end()))
+    
+    # Check for season and episode patterns
     for pattern in EPISODE_PATTERNS[:2]:  # First two patterns have both season and episode
         match = pattern.search(filename)
         if match:
-            return (int(match.group(1)), int(match.group(2)))
+            # Make sure it's not inside a range we want to skip
+            if not any(start <= match.start() <= end for start, end in skip_ranges):
+                return (int(match.group(1)), int(match.group(2)))
     
     # Check for bracketed episode number [01] format
-    match = EPISODE_PATTERNS[2].search(filename)
-    if match:
-        return (None, int(match.group(1)))
-    
-    # Check for standalone episode number
     match = EPISODE_PATTERNS[3].search(filename)
     if match:
-        return (None, int(match.group(1)))
+        # Make sure it's not inside a range we want to skip
+        if not any(start <= match.start() <= end for start, end in skip_ranges):
+            return (None, int(match.group(1)))
+    
+    # Check for standalone episode number
+    match = EPISODE_PATTERNS[4].search(filename)
+    if match:
+        # Make sure it's not inside a range we want to skip
+        if not any(start <= match.start() <= end for start, end in skip_ranges):
+            return (None, int(match.group(1)))
     
     return (None, None)
 
@@ -70,7 +95,7 @@ def extract_show_name(filename):
             break
     
     # Handle anime-style release names with brackets
-    if episode_match and episode_match.re == EPISODE_PATTERNS[2]:  # If it's the [01] format
+    if episode_match and episode_match.re == EPISODE_PATTERNS[3]:  # If it's the [01] format
         # Find the show name between the first bracket group and the episode number bracket
         parts = re.split(r'\[\d{1,3}\]', filename, 1)
         if len(parts) > 1:
@@ -380,6 +405,168 @@ def extract_lang_from_filename(path):
         return m.group('lang')
     return None
 
+def ass_timestamp_to_ms(timestamp):
+    """Convert ASS timestamp (h:mm:ss.cc) to milliseconds"""
+    # Handle if timestamp is already a timedelta object
+    if isinstance(timestamp, datetime.timedelta):
+        return int(timestamp.total_seconds() * 1000)
+        
+    # ASS format: h:mm:ss.cc (centiseconds)
+    hours, minutes, seconds_cs = timestamp.split(':')
+    seconds, centiseconds = seconds_cs.split('.')
+    
+    total_ms = (int(hours) * 3600 + int(minutes) * 60 + int(seconds)) * 1000
+    total_ms += int(centiseconds) * 10  # Convert centiseconds to milliseconds
+    
+    return total_ms
+
+def ms_to_ass_timestamp(ms):
+    """Convert milliseconds to ASS timestamp format (h:mm:ss.cc)"""
+    # Calculate components
+    hours = ms // 3600000
+    ms %= 3600000
+    minutes = ms // 60000
+    ms %= 60000
+    seconds = ms // 1000
+    centiseconds = (ms % 1000) // 10  # Convert to centiseconds (hundredths of a second)
+    
+    # Format as h:mm:ss.cc
+    return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
+
+def shift_subtitle_timing(sub_path, frames):
+    """
+    Shift subtitle timing by a specified number of frames
+    
+    Parameters:
+    - sub_path: Path to the subtitle file
+    - frames: Number of frames to shift (positive = delay, negative = advance)
+    
+    Returns path to the shifted subtitle file
+    """
+    if frames == 0:
+        return sub_path  # No shifting needed
+    
+    # Create temp directory if it doesn't exist
+    temp_dir_path = Path(TEMP_DIR)
+    temp_dir_path.mkdir(exist_ok=True)
+    
+    # Generate unique filename for the shifted subtitle
+    unique_id = str(uuid.uuid4())[:8]
+    shifted_sub_path = temp_dir_path / f"{sub_path.stem}_shifted_{unique_id}{sub_path.suffix}"
+    
+    # Handle different subtitle formats
+    if sub_path.suffix.lower() in ['.ass', '.ssa']:
+        try:
+            # Use ass library for ASS/SSA files with direct frame shifting
+            with open(sub_path, 'r', encoding='utf-8-sig') as f:
+                doc = ass.parse(f)
+            
+            # Get video fps - first try from the subtitle's ScriptInfo section
+            fps = 23.976  # Default value
+            if hasattr(doc.info, 'Timer') and doc.info.Timer:
+                try:
+                    fps = float(doc.info.Timer)
+                except (ValueError, TypeError):
+                    pass
+                    
+            # Get frame duration in milliseconds
+            frame_duration_ms = 1000 / fps
+            shift_ms = int(frames * frame_duration_ms)
+            
+            # Shift all dialogue events by the specified number of frames
+            for event in doc.events:
+                # Get current timestamps in milliseconds using our own function
+                start_ms = ass_timestamp_to_ms(event.start)
+                end_ms = ass_timestamp_to_ms(event.end)
+                
+                # Apply shift by frames (converted to ms)
+                start_ms += shift_ms
+                end_ms += shift_ms
+                
+                # Ensure times don't go negative
+                if start_ms < 0:
+                    start_ms = 0
+                if end_ms < 0:
+                    end_ms = 0
+                
+                # Convert back to ASS timestamp format using our own function
+                event.start = ms_to_ass_timestamp(start_ms)
+                event.end = ms_to_ass_timestamp(end_ms)
+            
+            # Write shifted subtitle
+            with open(shifted_sub_path, 'w', encoding='utf-8') as f:
+                doc.dump_file(f)
+                
+            print(f"Shifted subtitle by {frames} frames ({shift_ms}ms at {fps:.3f}fps)")
+            return shifted_sub_path
+            
+        except Exception as e:
+            print(f"Error shifting ASS subtitle: {e}")
+            return sub_path
+            
+    elif sub_path.suffix.lower() == '.srt':
+        try:
+            # For SRT files, use regex-based approach with frame-based shifting
+            with open(sub_path, 'r', encoding='utf-8-sig') as f:
+                content = f.read()
+            
+            # SRT timestamp format: 00:00:00,000 --> 00:00:00,000
+            pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2}),(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2}),(\d{3})')
+            
+            # Standard framerate for SRT files
+            fps = 23.976
+            frame_duration_ms = 1000 / fps
+            shift_ms = int(frames * frame_duration_ms)
+            
+            def replace_timestamp(match):
+                # Convert timestamp to milliseconds
+                h1, m1, s1, ms1, h2, m2, s2, ms2 = map(int, match.groups())
+                
+                # Calculate total milliseconds
+                start_ms = (h1 * 3600 + m1 * 60 + s1) * 1000 + ms1
+                end_ms = (h2 * 3600 + m2 * 60 + s2) * 1000 + ms2
+                
+                # Apply frame-based shift
+                start_ms += shift_ms
+                end_ms += shift_ms
+                
+                # Ensure times don't go negative
+                if start_ms < 0:
+                    start_ms = 0
+                if end_ms < 0:
+                    end_ms = 0
+                
+                # Convert back to timestamp format
+                start_h = int(start_ms // 3600000)
+                start_m = int((start_ms % 3600000) // 60000)
+                start_s = int((start_ms % 60000) // 1000)
+                start_ms = int(start_ms % 1000)
+                
+                end_h = int(end_ms // 3600000)
+                end_m = int((end_ms % 3600000) // 60000)
+                end_s = int((end_ms % 60000) // 1000)
+                end_ms = int(end_ms % 1000)
+                
+                return f"{start_h:02d}:{start_m:02d}:{start_s:02d},{start_ms:03d} --> {end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms:03d}"
+            
+            # Apply the replacement
+            shifted_content = pattern.sub(replace_timestamp, content)
+            
+            # Write shifted subtitle
+            with open(shifted_sub_path, 'w', encoding='utf-8') as f:
+                f.write(shifted_content)
+                
+            print(f"Shifted subtitle by {frames} frames ({shift_ms}ms at {fps:.3f}fps)")
+            return shifted_sub_path
+            
+        except Exception as e:
+            print(f"Error shifting SRT subtitle: {e}")
+            return sub_path
+    
+    # For other formats, just return the original file
+    print(f"Subtitle format {sub_path.suffix} doesn't support shifting, using original")
+    return sub_path
+
 def get_font_attachments(fonts_dir):
     """Get font attachments from a directory"""
     attachments = []
@@ -520,6 +707,26 @@ def get_video_resolution(video_path):
     except (IndexError, KeyError):
         print(f"Warning: Could not get resolution for {video_path}")
         return 0, 0
+
+def get_video_fps(video_path):
+    """Get video FPS using ffprobe"""
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=r_frame_rate',
+        '-of', 'csv=p=0',
+        str(video_path)
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        fps = result.stdout.strip()
+        if fps:
+            num, denom = map(int, fps.split('/'))
+            return num / denom
+    except Exception as e:
+        print(f"Warning: Could not get FPS for {video_path}: {e}")
+    return 23.976  # Default fallback
 
 def resample_ass_subtitle(sub_path, video_path, force_resample=False, no_resample=False):
     """
@@ -682,19 +889,26 @@ def check_mkv_has_chapters_and_tags(video_path):
         print(f"Warning: Could not check chapters/tags in {video_path}: {e}")
         return False, False
 
-def mux_sub_and_fonts(video_path, sub_path, sub_lang, font_files, chapters_file=None, tags_file=None, release_tag=DEFAULT_RELEASE_TAG, video_track_name=None, sub_track_name=None):
+def mux_sub_and_fonts(video_path, sub_path, sub_lang, font_files, chapters_file=None, tags_file=None, release_tag=DEFAULT_RELEASE_TAG, video_track_name=None, sub_track_name=None, output_dir=None):
     """Mux subtitles, fonts, chapters, and tags into MKV files"""
     # Generate output filename according to the requested format
     output_filename = generate_output_filename(video_path, release_tag)
     
     # Extract show name for creating a directory
     show_name = extract_show_name(video_path.stem)
-    show_dir = video_path.parent / show_name.strip()
     
-    # Create the show directory if it doesn't exist
+    # Determine the output directory - create a single folder for the show
+    if output_dir:
+        # If output_dir is specified, create one folder for the entire show
+        show_dir = Path(output_dir) / f"[{release_tag}] {show_name.strip()}"
+    else:
+        # Default behavior - use the video's parent directory as base
+        show_dir = video_path.parent / show_name.strip()
+    
+    # Create the output directory if it doesn't exist
     show_dir.mkdir(exist_ok=True)
     
-    # Set output path to the show directory
+    # Set output path to the output directory
     output_path = show_dir / output_filename
     
     # Check if the source MKV has chapters/tags we want to preserve
@@ -787,6 +1001,8 @@ def main():
                         help='Custom name for subtitle tracks (defaults to release group from filename)')
     parser.add_argument('--lang', '-l', dest='subtitle_lang', 
                         help='Force a specific subtitle language code (e.g., eng, jpn) for all subtitles')
+    parser.add_argument('--shift-frames', type=int, dest='shift_frames',
+                        help='Shift subtitles by the specified number of frames (positive = delay, negative = advance)')
     parser.add_argument('--force', '-f', action='store_true', 
                         help='Force muxing of ALL subtitle files in the same folder as the MKV file')
     parser.add_argument('--all-match', '-a', action='store_true',
@@ -801,6 +1017,8 @@ def main():
                         help='Skip resampling of ASS subtitles entirely')
     parser.add_argument('--force-resample', action='store_true',
                         help='Force resampling of ASS subtitles even if resolutions match')
+    parser.add_argument('--output-dir', dest='output_dir',
+                        help='Specify an output directory for the muxed files')
     
     try:
         args = parser.parse_args()
@@ -821,6 +1039,9 @@ def main():
     
     # Use the provided directory as root
     root = Path(args.directory)
+    
+    # Set the output directory - by default use the input directory if --output-dir is not specified
+    output_dir = args.output_dir if args.output_dir else root
     
     # Create temp dir if it doesn't exist
     temp_dir_path = Path(TEMP_DIR)
@@ -881,6 +1102,11 @@ def main():
             if not subtitles:
                 print(f"No subtitles found for {mkv.name}, skipping")
                 continue
+            
+            # Shift subtitle timing if requested
+            if args.shift_frames:
+                print(f"Shifting subtitles by {args.shift_frames} frames")
+                subtitles = [shift_subtitle_timing(sub, args.shift_frames) for sub in subtitles]
                 
             # Resample all ASS subtitles to match video resolution
             subtitles = [resample_ass_subtitle(sub, mkv, force_resample=args.force_resample, no_resample=args.no_resample) for sub in subtitles]
@@ -915,7 +1141,7 @@ def main():
                 print(f"\nProcessing subtitle: {sub_path.name}")
                 mux_sub_and_fonts(
                     mkv, sub_path, sub_lang, font_files, chapters_file, tags_file, 
-                    args.release_tag, args.video_track_name, args.sub_track_name
+                    args.release_tag, args.video_track_name, args.sub_track_name, output_dir
                 )
     finally:
         # Clean up temporary directory after processing all files
