@@ -1,6 +1,6 @@
 # Muxxy - MKV Subtitle and Font Muxing Tool
 
-A Python script that automatically muxes subtitle files, font attachments, chapters, and tags into MKV video files.
+A Python tool that automatically muxes subtitle files, font attachments, chapters, and tags into MKV video files.
 
 ## Features
 
@@ -10,6 +10,7 @@ A Python script that automatically muxes subtitle files, font attachments, chapt
 - Supports chapter files and tag files
 - Handles multiple subtitle naming conventions
 - Creates organized output files with proper naming
+- Includes both CLI and interactive TUI interfaces
 
 ## Installation
 
@@ -19,34 +20,65 @@ A Python script that automatically muxes subtitle files, font attachments, chapt
 - `mkvmerge` (part of MKVToolNix)
 - `ffprobe` (part of FFmpeg)
 - `ass` Python library
+- `textual` Python library (for TUI)
 
 ```bash
 # Debian/Ubuntu
 sudo apt-get install mkvtoolnix ffmpeg
-pip install ass
+pip install ass textual
 
 # Arch Linux
 sudo pacman -S mkvtoolnix ffmpeg
-pip install ass
+pip install ass textual
 
 # macOS (using Homebrew)
 brew install mkvtoolnix ffmpeg
-pip install ass
+pip install ass textual
+
+# NixOS (using provided shell.nix)
+nix-shell
 ```
 
 ## Usage
 
+Muxxy provides two interfaces: a command-line interface (CLI) and a terminal user interface (TUI).
+
+### Terminal User Interface (TUI)
+
+For an interactive experience, simply run:
+
 ```bash
-python mux.py [options]
+python main.py
 ```
 
-### Basic Usage
+This launches the TUI with the following features:
+- **Welcome Screen**: Navigate through available options
+- **File List**: Browse available MKV and subtitle files in your directory
+- **Mux Options**: Configure muxing settings through a user-friendly form
+- **Settings**: Configure application preferences (coming soon)
 
-Simply running `python mux.py` will:
+Navigate the TUI using:
+- Mouse clicks on buttons and form fields
+- Keyboard shortcuts shown at the bottom of each screen
+- Tab to move between form fields
+- Arrow keys for selection
+- Enter to confirm actions
+
+### Command-line Interface (CLI)
+
+For scripting or batch operations, use the CLI by passing arguments:
+
+```bash
+python main.py [options]
+```
+
+### Basic CLI Usage
+
+Running `python main.py --tag "MyTag"` will:
 1. Find all MKV files in the current directory and subdirectories
 2. Match each MKV with appropriate subtitles, fonts, chapters, and tags
 3. Resample ASS subtitles to match video resolution
-4. Create new files with format: `[Tag] Show - E01 [Video Params].mkv`
+4. Create new files with format: `[MyTag] Title - 01 [BDRip 1080p HEVC OPUS].mkv`
 
 ### Command-line Arguments
 
@@ -71,17 +103,34 @@ Simply running `python mux.py` will:
 
 ```bash
 # Basic usage with custom release tag
-python mux.py --tag "MyGroup"
+python main.py --tag "MyGroup"
 
 # Process files in a specific directory
-python mux.py --dir "/path/to/videos"
+python main.py --dir "/path/to/videos"
 
 # Force English language for subtitles
-python mux.py --lang eng
+python main.py --lang eng
 
 # Troubleshooting subtitle matching
-python mux.py --debug --filenames
+python main.py --debug --filenames
 ```
+
+## Output Filename Format
+
+Muxxy creates organized output files with the following naming convention:
+
+```
+[Tag] Title - 01 [Source Type Resolution BitDepth VideoCodec AudioCodec].mkv
+```
+
+The file includes:
+- Your custom release tag
+- Show name and episode number (extracted from source filename)
+- Source type (BDRip, Web-DL, etc.)
+- Resolution (1080p, 720p, etc.)
+- Bit depth when applicable (10bit)
+- Video codec (HEVC, h264)
+- Audio codec (DTS, AAC, FLAC, etc.)
 
 ## Directory Structure
 

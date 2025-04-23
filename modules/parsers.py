@@ -86,10 +86,12 @@ def extract_release_group(filename):
 def format_episode_number(season, episode):
     """
     Format season and episode numbers into a standardized string.
+    For episodes with season, use SXXEXX format.
+    For standalone episodes with no season, use just the episode number XX.
     """
     if season is not None:
         return f"S{season:02d}E{episode:02d}"
-    return f"E{episode:02d}"
+    return f"{episode:02d}"
 
 def generate_output_filename(video_path, release_tag):
     """
