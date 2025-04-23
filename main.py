@@ -4,8 +4,8 @@ Muxxy - A tool for muxing subtitles, fonts, and other attachments into MKV files
 """
 
 import sys
-from muxxy.cli import main as cli_main
-from muxxy.tui import run_tui
+from modules.cli import main as cli_main
+from modules.tui import run_tui
 
 if __name__ == "__main__":
     # If no arguments are provided, launch the TUI

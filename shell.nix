@@ -22,13 +22,13 @@ pkgs.mkShell {
     pythonWithPackages
     
     # System tools
-    ffmpeg               # For ffprobe and video processing
-    mkvtoolnix          # For mkvmerge
+    ffmpeg 
+    mkvtoolnix 
     
     # Development tools
-    python3Packages.black   # Code formatter
-    python3Packages.pylint  # Linter
-    python3Packages.pytest  # Testing framework
+    python3Packages.black 
+    python3Packages.pylint
+    python3Packages.pytest
   ];
   
   # Set up shell hook
