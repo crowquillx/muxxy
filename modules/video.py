@@ -1,6 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
+import re
 
 def get_video_resolution(video_path):
     """
@@ -51,11 +52,16 @@ def get_video_fps(video_path):
 
 def get_video_params(video_path):
     """
-    Get video parameters (resolution, bit depth, encoder) suitable for 
+    Get video parameters (source type, resolution, bit depth, encoder, audio codec) suitable for 
     including in a filename.
     Returns a list of string parameters.
     """
     params = []
+    
+    # Get source type (BDRip, Web-DL, etc.) and add it first
+    source_type = get_video_source_type(video_path)
+    if source_type:
+        params.append(source_type)
     
     width, height = get_video_resolution(video_path)
     if width and height:
@@ -92,7 +98,55 @@ def get_video_params(video_path):
     except Exception as e:
         print(f"Warning: Could not get video parameters: {e}")
     
+    # Get audio codec and add it to parameters
+    audio_codec = get_audio_codec(video_path)
+    if audio_codec:
+        params.append(audio_codec)
+    
     return params
+
+def get_audio_codec(video_path):
+    """
+    Get the primary audio codec of the video file.
+    Returns a string representing the audio codec in a format suitable for filename.
+    """
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'a:0',
+        '-show_entries', 'stream=codec_name',
+        '-of', 'json',
+        str(video_path)
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        
+        stream = data.get('streams', [{}])[0]
+        codec_name = stream.get('codec_name', '').lower()
+        
+        if codec_name == 'aac':
+            return 'AAC'
+        elif codec_name == 'ac3':
+            return 'AC3'
+        elif 'dts' in codec_name:
+            if 'hd' in codec_name:
+                return 'DTS-HD'
+            else:
+                return 'DTS'
+        elif codec_name == 'flac':
+            return 'FLAC'
+        elif codec_name == 'opus':
+            return 'OPUS'
+        elif codec_name == 'mp3':
+            return 'MP3'
+        elif codec_name:
+            # Return capitalized codec name if we don't have a specific mapping
+            return codec_name.upper()
+        return None
+    except Exception as e:
+        print(f"Warning: Could not get audio codec for {video_path}: {e}")
+        return None
 
 def find_mkv_files(root):
     """
@@ -451,3 +505,49 @@ def mux_selected_tracks(output_path, track_sources):
     except Exception as e:
         print(f"Error during muxing: {e}")
         return False
+
+def get_video_source_type(video_path):
+    """
+    Extract fansub source type information from the video filename.
+    Returns a string representing the source type (e.g., BDRip, Web-DL).
+    """
+    filename = video_path.name.lower()
+    
+    # Common fansub source types and their standardized representations
+    source_types = {
+        'bdrip': 'BDRip',
+        'bd.?rip': 'BDRip',
+        'bluray': 'BluRay',
+        'blu.?ray': 'BluRay',
+        'bd.?remux': 'BD REMUX',
+        'bdremux': 'BD REMUX', 
+        'remux': 'REMUX',
+        'web.?dl': 'WEB-DL',
+        'webdl': 'WEB-DL',
+        'web.?rip': 'WEBRip',
+        'webrip': 'WEBRip',
+        'dvdrip': 'DVDRip',
+        'dvd.?rip': 'DVDRip',
+        'hdtv': 'HDTV',
+        'hd.?tv': 'HDTV',
+        'tv.?rip': 'TVRip',
+        'tvrip': 'TVRip',
+        'vhs.?rip': 'VHSRip',
+        'vhsrip': 'VHSRip',
+        'hdcam': 'HDCAM',
+        'hd.?cam': 'HDCAM',
+    }
+    
+    # Try to find matches in the filename
+    for pattern, label in source_types.items():
+        if re.search(r'[\[\( ]' + pattern + r'[\]\) ]', filename, re.IGNORECASE):
+            return label
+    
+    # Check also for patterns in brackets
+    bracket_matches = re.findall(r'\[(.*?)\]', filename)
+    for match in bracket_matches:
+        for pattern, label in source_types.items():
+            if re.search(pattern, match, re.IGNORECASE):
+                return label
+    
+    return None
