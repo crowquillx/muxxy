@@ -14,7 +14,6 @@ from textual.screen import Screen
 from .cli import parse_arguments, main as cli_main
 from .constants import DEFAULT_RELEASE_TAG, SUB_EXTS
 from .video import find_mkv_files
-from .subtitles import find_matching_subtitles
 
 
 class MuxxyHeader(Static):
