@@ -331,11 +331,16 @@ def mux_sub_and_fonts(video_path, sub_path, sub_lang, font_files, chapters_file=
             cmd.append(str(sub_path))
     
     for font, font_lang in font_files:
+        # Determine MIME type based on extension
+        mime_type = 'application/x-truetype-font'
+        if font.suffix.lower() == '.otf':
+            mime_type = 'application/vnd.ms-opentype'
+            
         if font_lang:
-            cmd += ['--attachment-mime-type', 'application/x-truetype-font', '--attachment-name', 
+            cmd += ['--attachment-mime-type', mime_type, '--attachment-name', 
                    font.name, '--attachment-description', font_lang, '--attach-file', str(font)]
         else:
-            cmd += ['--attachment-mime-type', 'application/x-truetype-font', '--attachment-name', 
+            cmd += ['--attachment-mime-type', mime_type, '--attachment-name', 
                    font.name, '--attach-file', str(font)]
     
     if chapters_file:

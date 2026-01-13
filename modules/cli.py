@@ -1,17 +1,15 @@
 import argparse
 import sys
+import re
 from pathlib import Path
 import shutil
 
 from .constants import DEFAULT_RELEASE_TAG, TEMP_DIR, SUB_EXTS
 from .parsers import extract_episode_info
-from .video import (
-    find_mkv_files, find_chapters_file, find_tags_file, mux_sub_and_fonts
-)
-from .subtitles import (
-    find_matching_subtitles, shift_subtitle_timing, resample_ass_subtitle
-)
-from .fonts import find_fonts_for_episode
+from .video import find_mkv_files
+from .matcher import Matcher, MatchResult
+from core.engine import MuxingEngine
+from core.config import MuxxyConfig
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Mux subtitles, fonts, chapters, and tags into MKV files')
@@ -25,7 +23,7 @@ def parse_arguments():
                         help='Custom name for subtitle tracks (defaults to release group from filename)')
     parser.add_argument('--lang', '-l', dest='subtitle_lang', 
                         help='Force a specific subtitle language code (e.g., eng, jpn) for all subtitles')
-    parser.add_argument('--shift-frames', type=int, dest='shift_frames',
+    parser.add_argument('--shift-frames', type=int, dest='shift_frames', default=0,
                         help='Shift subtitles by the specified number of frames (positive = delay, negative = advance)')
     parser.add_argument('--force', '-f', action='store_true', 
                         help='Force muxing of ALL subtitle files in the same folder as the MKV file')
@@ -43,6 +41,14 @@ def parse_arguments():
                         help='Force resampling of ASS subtitles even if resolutions match')
     parser.add_argument('--output-dir', dest='output_dir',
                         help='Specify an output directory for the muxed files')
+    parser.add_argument('--preview', action='store_true',
+                        help='Preview matches without executing muxing')
+    parser.add_argument('--confidence-threshold', type=float, dest='confidence_threshold', default=0.7,
+                        help='Minimum confidence score for auto-matching (0.0-1.0, default: 0.7)')
+    parser.add_argument('--batch', action='store_true',
+                        help='Enable parallel batch processing')
+    parser.add_argument('--workers', type=int, dest='max_workers', default=4,
+                        help='Number of parallel workers for batch mode (default: 4)')
     
     try:
         args = parser.parse_args()
@@ -69,7 +75,7 @@ def print_filenames(root):
     print(f"\nMKV files found:")
     for mkv in mkv_files:
         video_season, video_episode = extract_episode_info(mkv.stem)
-        print(f"  {mkv.name} (Episode: {video_episode})")
+        print(f"  {mkv.name} (S{video_season:02d}E{video_episode:02d})" if video_season and video_episode else f"  {mkv.name}")
     
     print("\nSubtitle files found:")
     all_subs = []
@@ -77,7 +83,7 @@ def print_filenames(root):
         all_subs.extend(list(root.glob(f"**/*{ext}")))
     for sub in all_subs:
         sub_season, sub_episode = extract_episode_info(sub.stem)
-        print(f"  {sub.name} (Episode: {sub_episode})")
+        print(f"  {sub.name} (S{sub_season:02d}E{sub_episode:02d})" if sub_season and sub_episode else f"  {sub.name}")
 
 def cleanup_temp_files():
     """
@@ -94,86 +100,112 @@ def cleanup_temp_files():
 
 def main():
     """
-    Main entry point for the application.
+    Main entry point for the CLI application.
     """
-    import re  # Import re here to avoid circular imports with parsers
-    
     args = parse_arguments()
     root = Path(args.directory)
     
-    output_dir = args.output_dir if args.output_dir else root
+    output_dir = Path(args.output_dir) if args.output_dir else None
     
     temp_dir_path = Path(TEMP_DIR)
     temp_dir_path.mkdir(exist_ok=True)
     
     try:
+        # Initialize matcher and engine
+        matcher = Matcher(debug=args.debug)
+        engine = MuxingEngine(debug=args.debug)
+        
+        # Find video and subtitle files
         mkv_files = find_mkv_files(root)
         print(f"Found {len(mkv_files)} MKV files to process")
         
         if args.filenames:
             print_filenames(root)
             return
+        
+        if not mkv_files:
+            print("No MKV files found in directory")
+            return
+        
+        # Find all subtitle files
+        subtitle_files = matcher.find_all_subtitles(root)
+        print(f"Found {len(subtitle_files)} subtitle files")
+        
+        if not subtitle_files:
+            print("No subtitle files found in directory")
+            return
+        
+        # Perform matching
+        print("\nMatching videos to subtitles...")
+        matches = matcher.match_batch(mkv_files, subtitle_files, strict=args.strict)
+        
+        # Filter by confidence threshold
+        if not args.force:
+            low_confidence = [m for m in matches if m.subtitle_path and not m.is_confident(args.confidence_threshold)]
+            if low_confidence:
+                print(f"\nWarning: {len(low_confidence)} match(es) below confidence threshold ({args.confidence_threshold})")
+                for match in low_confidence:
+                    print(f"  {match.video_path.name} -> {match.subtitle_path.name} ({match.confidence:.0%})")
+                print("These will be skipped. Use --confidence-threshold to adjust or --force to include all.")
             
-        for mkv in mkv_files:
-            subtitles = find_matching_subtitles(mkv, force=args.force, all_matches=args.all_match or args.force, debug=args.debug)
+            # Filter out low confidence matches
+            matches = [
+                MatchResult(
+                    video_path=m.video_path,
+                    subtitle_path=m.subtitle_path if m.is_confident(args.confidence_threshold) else None,
+                    confidence=m.confidence,
+                    match_type=m.match_type,
+                    reason=m.reason
+                )
+                for m in matches
+            ]
+        
+        # Preview mode
+        if args.preview:
+            engine.preview_matches(matches, args.confidence_threshold)
+            return
+        
+        # Prepare mux options
+        mux_options = {
+            'subtitle_lang': args.subtitle_lang,
+            'shift_frames': args.shift_frames,
+            'no_resample': args.no_resample,
+            'force_resample': args.force_resample,
+            'video_track_name': args.video_track_name,
+            'sub_track_name': args.sub_track_name,
+            'release_tag': args.release_tag,
+            'output_dir': output_dir,
+        }
+        
+        # Execute muxing
+        if args.batch:
+            # Batch mode with parallel processing
+            def progress_callback(current, total, filename):
+                print(f"[{current}/{total}] Processed: {filename}")
             
-            if not subtitles and not args.force and not args.strict:
-                print(f"No subtitles found with standard matching for {mkv.name}, trying more aggressive matching...")
-                
-                all_subs_in_dir = []
-                for ext in SUB_EXTS:
-                    all_subs_in_dir.extend(list(mkv.parent.glob(f"*{ext}")))
-                
-                if args.debug:
-                    print(f"DEBUG: Found {len(all_subs_in_dir)} subtitle files in directory")
-                
-                video_season, video_episode = extract_episode_info(mkv.stem)
-                
-                if video_episode is not None:
-                    for sub_path in all_subs_in_dir:
-                        sub_season, sub_episode = extract_episode_info(sub_path.stem)
-                        if sub_episode == video_episode:
-                            if args.debug:
-                                print(f"DEBUG: Last resort match by episode number alone: {sub_path.name}")
-                            subtitles.append(sub_path)
-                            if not args.all_match:
-                                break
+            successes, failures = engine.mux_batch(
+                matches,
+                progress_callback=progress_callback,
+                max_workers=args.max_workers,
+                **mux_options
+            )
+        else:
+            # Sequential mode (original behavior)
+            successes = 0
+            failures = 0
             
-            if not subtitles:
-                print(f"No subtitles found for {mkv.name}, skipping")
-                continue
-            
-            if args.shift_frames:
-                print(f"Shifting subtitles by {args.shift_frames} frames")
-                subtitles = [shift_subtitle_timing(sub, args.shift_frames) for sub in subtitles]
-                
-            subtitles = [resample_ass_subtitle(sub, mkv, force_resample=args.force_resample, no_resample=args.no_resample) for sub in subtitles]
-            
-            sub_langs = []
-            for sub in subtitles:
-                if args.subtitle_lang:
-                    sub_langs.append(args.subtitle_lang)
-                else:
-                    lang = extract_lang_from_filename(sub)
-                    sub_langs.append(lang)
-            
-            font_files = find_fonts_for_episode(mkv, subtitles[0] if subtitles else None)
-            
-            chapters_file = find_chapters_file(mkv)
-            tags_file = find_tags_file(mkv)
-            
-            for sub_path, sub_lang in zip(subtitles, sub_langs):
-                video_season, video_episode = extract_episode_info(mkv.stem)
-                sub_season, sub_episode = extract_episode_info(sub_path.stem)
-                
-                if not args.force and video_episode is not None and sub_episode is not None and video_episode != sub_episode:
-                    print(f"WARNING: Episode number mismatch between video ({video_episode}) and subtitle ({sub_episode}). Skipping.")
+            for match in matches:
+                if match.subtitle_path is None:
+                    print(f"\nNo subtitle for {match.video_path.name}, skipping")
+                    failures += 1
                     continue
                 
-                print(f"\nProcessing subtitle: {sub_path.name}")
-                mux_sub_and_fonts(
-                    mkv, sub_path, sub_lang, font_files, chapters_file, tags_file, 
-                    args.release_tag, args.video_track_name, args.sub_track_name, output_dir
-                )
+                if engine.mux_single(match, **mux_options):
+                    successes += 1
+                else:
+                    failures += 1
+            
+            print(f"\nComplete: {successes} succeeded, {failures} failed")
+            
     finally:
         cleanup_temp_files()
