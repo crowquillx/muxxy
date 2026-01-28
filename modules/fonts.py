@@ -31,7 +31,11 @@ def find_fonts_for_episode(episode_path, subtitle_path=None):
         sub_fonts_dir = subtitle_dir / FONTS_DIR
         sub_attachments_dir = subtitle_dir / ATTACHMENTS_DIR
         
-        for dir_path in [sub_fonts_dir, sub_attachments_dir]:
+        # Check parent directory for fonts/attachments (e.g. ../fonts)
+        parent_fonts_dir = subtitle_dir.parent / FONTS_DIR
+        parent_attachments_dir = subtitle_dir.parent / ATTACHMENTS_DIR
+        
+        for dir_path in [sub_fonts_dir, sub_attachments_dir, parent_fonts_dir, parent_attachments_dir]:
             attachments.extend(get_font_attachments(dir_path))
         
         for font_ext in FONT_EXTS:

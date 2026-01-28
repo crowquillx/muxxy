@@ -124,19 +124,24 @@ class SettingsDialog(QDialog):
         matching_group.setLayout(matching_layout)
         layout.addWidget(matching_group)
         
-        # Info label
-        info = QWidget()
-        info_layout = QVBoxLayout(info)
-        info_layout.addWidget(QGroupBox("About Matching"))
-        info_text = QWidget()
-        info_text_layout = QFormLayout(info_text)
-        info_text_layout.addRow("The matcher uses episode/season numbers to find subtitle matches.")
-        info_text_layout.addRow("Confidence threshold determines the minimum score for auto-matching.")
-        info_text_layout.addRow("Lower values = more matches, but less accurate.")
-        info_text_layout.addRow("Higher values = fewer matches, but more accurate.")
-        info_text_layout.addRow("You can always manually override matches in the GUI.")
-        info.layout().addWidget(info_text)
-        layout.addWidget(info)
+        # Info group
+        info_group = QGroupBox("About Matching")
+        info_layout = QVBoxLayout(info_group)
+        
+        from PyQt6.QtWidgets import QLabel
+        info_labels = [
+            "The matcher uses episode/season numbers to find subtitle matches.",
+            "Confidence threshold determines the minimum score for auto-matching.",
+            "Lower values = more matches, but less accurate.",
+            "Higher values = fewer matches, but more accurate.",
+            "You can always manually override matches in the GUI."
+        ]
+        for text in info_labels:
+            label = QLabel(text)
+            label.setWordWrap(True)
+            info_layout.addWidget(label)
+        
+        layout.addWidget(info_group)
         
         layout.addStretch()
         return widget

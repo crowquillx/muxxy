@@ -289,8 +289,10 @@ def mux_sub_and_fonts(video_path, sub_path, sub_lang, font_files, chapters_file=
     show_name = extract_show_name(video_path.stem)
     
     if output_dir:
-        show_dir = Path(output_dir) / f"[{release_tag}] {show_name.strip()}"
+        # User requested flat output directory
+        show_dir = Path(output_dir)
     else:
+        # Default to subdirectory next to video
         show_dir = video_path.parent / show_name.strip()
     
     show_dir.mkdir(exist_ok=True)
@@ -307,7 +309,11 @@ def mux_sub_and_fonts(video_path, sub_path, sub_lang, font_files, chapters_file=
     if sub_path and sub_track_name is None:
         sub_track_name = extract_release_group(sub_path.name)
     
+    # Start building command
     cmd = ['mkvmerge', '-o', str(output_path)]
+    
+    # Global options for the first input file (the video)
+    cmd.append('--no-subtitles')  # Strip original subtitles
     
     if not chapters_file and has_chapters:
         print("  - Using existing chapters from source file")
@@ -316,6 +322,7 @@ def mux_sub_and_fonts(video_path, sub_path, sub_lang, font_files, chapters_file=
     
     if video_track_name:
         cmd += ['--track-name', f'0:{video_track_name}']
+    
     cmd.append(str(video_path))
     
     if sub_path:

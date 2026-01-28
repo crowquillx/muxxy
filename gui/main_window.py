@@ -85,14 +85,36 @@ class MainWindow(QMainWindow):
         # Left panel: Video files
         video_panel = QWidget()
         video_layout = QVBoxLayout(video_panel)
-        video_layout.addWidget(QLabel("<b>Video Files</b>"))
+        
+        # Header for video panel
+        video_header = QWidget()
+        video_header_layout = QHBoxLayout(video_header)
+        video_header_layout.setContentsMargins(0, 0, 0, 0)
+        video_header_layout.addWidget(QLabel("<b>Video Files</b>"))
+        self.video_dir_btn = QPushButton("📂 Change Dir")
+        self.video_dir_btn.setToolTip("Change video source directory")
+        self.video_dir_btn.clicked.connect(self.open_video_directory)
+        video_header_layout.addWidget(self.video_dir_btn)
+        video_layout.addWidget(video_header)
+        
         self.video_browser = FileBrowser(file_filter="*.mkv")
         video_layout.addWidget(self.video_browser)
         
         # Center panel: Subtitle files
         subtitle_panel = QWidget()
         subtitle_layout = QVBoxLayout(subtitle_panel)
-        subtitle_layout.addWidget(QLabel("<b>Subtitle Files</b>"))
+        
+        # Header for subtitle panel
+        sub_header = QWidget()
+        sub_header_layout = QHBoxLayout(sub_header)
+        sub_header_layout.setContentsMargins(0, 0, 0, 0)
+        sub_header_layout.addWidget(QLabel("<b>Subtitle Files</b>"))
+        self.sub_dir_btn = QPushButton("📂 Change Dir")
+        self.sub_dir_btn.setToolTip("Change subtitle source directory")
+        self.sub_dir_btn.clicked.connect(self.open_subtitle_directory)
+        sub_header_layout.addWidget(self.sub_dir_btn)
+        subtitle_layout.addWidget(sub_header)
+        
         self.subtitle_browser = FileBrowser(file_filter="*.ass *.srt *.ssa")
         subtitle_layout.addWidget(self.subtitle_browser)
         
@@ -215,7 +237,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self.cancel_muxing)
         
         # Connect browser signals
-        self.video_browser.directory_changed.connect(self.on_directory_changed)
+        # self.video_browser.directory_changed.connect(self.on_directory_changed)
         
         # Connect match preview signals
         self.match_preview.match_changed.connect(self.on_match_changed)
@@ -233,11 +255,35 @@ class MainWindow(QMainWindow):
             self.subtitle_browser.set_directory(directory)
             self.config.last_directory = directory
             self.config.save()
+            self.statusbar.showMessage(f"Directory: {directory}")
+
+    def open_video_directory(self):
+        """Open a directory dialog for video files."""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Video Directory",
+            self.video_browser.current_directory or self.config.last_directory or str(Path.home())
+        )
+        
+        if directory:
+            self.video_browser.set_directory(directory)
+            self.statusbar.showMessage(f"Video Directory: {directory}")
+
+    def open_subtitle_directory(self):
+        """Open a directory dialog for subtitle files."""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Subtitle Directory",
+            self.subtitle_browser.current_directory or self.config.last_directory or str(Path.home())
+        )
+        
+        if directory:
+            self.subtitle_browser.set_directory(directory)
+            self.statusbar.showMessage(f"Subtitle Directory: {directory}")
     
     def on_directory_changed(self, directory: str):
         """Handle directory change in browser."""
-        # Sync both browsers
-        self.subtitle_browser.set_directory(directory)
+        # Deprecated: Syncing logic moved to open_directory
         self.statusbar.showMessage(f"Directory: {directory}")
     
     def match_files(self):
@@ -246,8 +292,14 @@ class MainWindow(QMainWindow):
         subtitle_files = self.subtitle_browser.get_all_files()  # All subtitles are candidates
         
         if not video_files:
-            QMessageBox.warning(self, "No Videos", "Please select at least one video file.")
-            return
+            # If no videos selected, try to get all files in the directory (recursive)
+            self.statusbar.showMessage("No selection. Scanning all video files recursively...")
+            video_files = self.video_browser.get_all_files()
+            
+            if not video_files:
+                QMessageBox.warning(self, "No Videos", "No video files found in the directory.")
+                self.statusbar.showMessage("Ready")
+                return
         
         if not subtitle_files:
             QMessageBox.warning(self, "No Subtitles", "No subtitle files found in the directory.")
